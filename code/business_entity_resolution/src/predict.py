@@ -4,17 +4,20 @@ Inference & Output Generation Module.
 Generates:
 1. output/candidate_pairs.tsv (blocking candidates fed to model)
 2. output/matching_results.tsv (final thresholded and globally assigned matches)
-3. Validates outputs with student_resource/utils/validate_submission.py
+3. Country-partitioned execution (France, US, India) to maintain optimal memory and speed.
 """
 
 import os
+import gc
+import sys
 import argparse
 import pickle
-from typing import Optional
+from typing import Dict, List, Optional, Set
 import numpy as np
 import polars as pl
 from tqdm import tqdm
 
+from normalize import normalize_country
 from blocking import CandidateBlocker
 from features import RecordRepresentation, compute_pair_features
 from assign import global_bipartite_assignment
@@ -31,115 +34,134 @@ def run_inference(
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
-    print(f"Loading trained model from {model_path}...")
+    print(f"Loading trained model from {model_path}...", flush=True)
     with open(model_path, "rb") as f:
         saved_obj = pickle.load(f)
     model = saved_obj["model"]
-    threshold = override_threshold if override_threshold is not None else saved_obj.get("threshold", 0.65)
-    print(f"Loaded model successfully. Decision threshold: {threshold:.2f}")
+    threshold = override_threshold if override_threshold is not None else saved_obj.get("threshold", 0.72)
+    print(f"Loaded model successfully. Decision threshold: {threshold:.2f}", flush=True)
 
     # File paths
     s1_path = os.path.join(test_dir, "test_source1.tsv")
     s2_path = os.path.join(test_dir, "test_source2.tsv")
     s3_path = os.path.join(test_dir, "test_source3.tsv")
 
-    print(f"\n--- 1. Indexing Target Records (S2 & S3) ---")
-    blocker = CandidateBlocker(max_candidates_per_key=300, max_candidates_per_entity=max_cands_per_entity)
-    target_reps = {}
-
-    print(f"Reading S2 records from {s2_path}...")
-    s2_df = pl.read_csv(s2_path, separator="\t")
-    print(f"S2 rows: {len(s2_df):,}")
-    for r in tqdm(s2_df.iter_rows(named=True), total=len(s2_df), desc="Indexing S2"):
-        rep = RecordRepresentation(
-            r["entity_id"], r["business_name"] or "", r["business_address"] or "", r["country"] or ""
-        )
-        target_reps[r["entity_id"]] = rep
-        blocker.index_target_records([r])
-
-    print(f"Reading S3 records from {s3_path}...")
-    s3_df = pl.read_csv(s3_path, separator="\t")
-    print(f"S3 rows: {len(s3_df):,}")
-    for r in tqdm(s3_df.iter_rows(named=True), total=len(s3_df), desc="Indexing S3"):
-        rep = RecordRepresentation(
-            r["entity_id"], r["business_name"] or "", r["business_address"] or "", r["country"] or ""
-        )
-        target_reps[r["entity_id"]] = rep
-        blocker.index_target_records([r])
-
-    print(f"Total target records indexed: {len(target_reps):,}")
-
-    print(f"\n--- 2. Processing Test Source 1 Entities ---")
+    print(f"Loading S1 test records from {s1_path}...", flush=True)
     s1_df = pl.read_csv(s1_path, separator="\t")
-    total_s1 = len(s1_df)
-    print(f"Total S1 test entities: {total_s1:,}")
-
-    candidate_pairs_map = {}
-    s1_candidate_probs = {}
-
-    s1_rows = s1_df.to_dicts()
     if sample_size is not None and sample_size > 0:
-        s1_rows = s1_rows[:sample_size]
-        total_s1 = len(s1_rows)
-    for idx in tqdm(range(0, total_s1, batch_size), desc="Scoring S1 Batches"):
-        batch_slice = s1_rows[idx : idx + batch_size]
-        for r in batch_slice:
-            s1_id = r["entity_id"]
-            s1_rep = RecordRepresentation(
-                s1_id, r["business_name"] or "", r["business_address"] or "", r["country"] or ""
+        s1_df = s1_df.head(sample_size)
+    total_s1 = len(s1_df)
+    print(f"Total S1 test entities: {total_s1:,}", flush=True)
+
+    all_s1_ids = s1_df["entity_id"].to_list()
+    countries = s1_df["country"].unique().to_list()
+    print(f"Countries detected in S1: {countries}", flush=True)
+
+    candidate_pairs_map: Dict[str, List[str]] = {}
+    matching_results_map: Dict[str, Set[str]] = {}
+
+    for c in countries:
+        c_norm = normalize_country(c)
+        print(f"\n==========================================", flush=True)
+        print(f" Processing Country: {c} (normalized: {c_norm})", flush=True)
+        print(f"==========================================", flush=True)
+
+        s1_c_df = s1_df.filter(pl.col("country") == c)
+        print(f"S1 {c} entities: {len(s1_c_df):,}", flush=True)
+
+        print(f"Filtering S2 records for {c}...", flush=True)
+        s2_c = pl.scan_csv(s2_path, separator="\t").filter(pl.col("country") == c).collect()
+        print(f"  S2 {c} records: {len(s2_c):,}", flush=True)
+
+        print(f"Filtering S3 records for {c}...", flush=True)
+        s3_c = pl.scan_csv(s3_path, separator="\t").filter(pl.col("country") == c).collect()
+        print(f"  S3 {c} records: {len(s3_c):,}", flush=True)
+
+        blocker = CandidateBlocker(max_candidates_per_key=300, max_candidates_per_entity=max_cands_per_entity)
+        target_reps: Dict[str, RecordRepresentation] = {}
+
+        print(f"Indexing S2 & S3 targets for {c}...", flush=True)
+        for r in s2_c.to_dicts():
+            rep = RecordRepresentation(
+                r["entity_id"], r["business_name"] or "", r["business_address"] or "", r["country"] or ""
             )
+            target_reps[r["entity_id"]] = rep
+            blocker.index_target_records([r])
 
-            cands = blocker.retrieve_candidates_for_entity(
-                s1_rep.name_clean, s1_rep.addr_clean, s1_rep.country
+        for r in s3_c.to_dicts():
+            rep = RecordRepresentation(
+                r["entity_id"], r["business_name"] or "", r["business_address"] or "", r["country"] or ""
             )
-            candidate_pairs_map[s1_id] = cands
+            target_reps[r["entity_id"]] = rep
+            blocker.index_target_records([r])
 
-            if not cands:
-                s1_candidate_probs[s1_id] = []
-                continue
+        print(f"Indexed {len(target_reps):,} targets for {c}.", flush=True)
 
-            feat_batch = []
-            valid_cids = []
-            for rank, cid in enumerate(cands):
-                cand_rep = target_reps.get(cid)
-                if not cand_rep:
+        s1_c_rows = s1_c_df.to_dicts()
+        s1_candidate_probs: Dict[str, List[tuple]] = {}
+
+        for idx in range(0, len(s1_c_rows), batch_size):
+            batch = s1_c_rows[idx : idx + batch_size]
+            for r in batch:
+                s1_id = r["entity_id"]
+                s1_rep = RecordRepresentation(
+                    s1_id, r["business_name"] or "", r["business_address"] or "", r["country"] or ""
+                )
+                cands = blocker.retrieve_candidates_for_entity(
+                    s1_rep.name_clean, s1_rep.addr_clean, s1_rep.country
+                )
+                candidate_pairs_map[s1_id] = cands
+
+                if not cands:
+                    s1_candidate_probs[s1_id] = []
                     continue
-                feats = compute_pair_features(s1_rep, cand_rep, cand_rank=rank, blocking_score=1.0)
-                feat_batch.append(feats)
-                valid_cids.append(cid)
 
-            if feat_batch:
-                X_batch = np.array(feat_batch, dtype=np.float32)
-                probs = model.predict_proba(X_batch)[:, 1]
-                s1_candidate_probs[s1_id] = list(zip(valid_cids, probs))
-            else:
-                s1_candidate_probs[s1_id] = []
+                feat_batch = []
+                valid_cids = []
+                for rank, cid in enumerate(cands):
+                    cand_rep = target_reps.get(cid)
+                    if not cand_rep:
+                        continue
+                    feats = compute_pair_features(s1_rep, cand_rep, cand_rank=rank, blocking_score=1.0)
+                    feat_batch.append(feats)
+                    valid_cids.append(cid)
 
-    print(f"\n--- 3. Running Global Bipartite Assignment ---")
-    matching_results_map = global_bipartite_assignment(
-        s1_candidate_probs, threshold=threshold
-    )
+                if feat_batch:
+                    X_batch = np.array(feat_batch, dtype=np.float32)
+                    probs = model.predict_proba(X_batch)[:, 1]
+                    s1_candidate_probs[s1_id] = list(zip(valid_cids, probs))
+                else:
+                    s1_candidate_probs[s1_id] = []
 
-    print(f"\n--- 4. Writing Output Files ---")
+            if (idx + batch_size) % 50000 == 0 or (idx + batch_size) >= len(s1_c_rows):
+                print(f"  Processed {min(idx + batch_size, len(s1_c_rows)):,} / {len(s1_c_rows):,} S1 entities in {c}", flush=True)
+
+        print(f"Applying bipartite global assignment for {c}...", flush=True)
+        c_matches = global_bipartite_assignment(s1_candidate_probs, threshold=threshold)
+        matching_results_map.update(c_matches)
+
+        # Free memory
+        del blocker, target_reps, s2_c, s3_c, s1_c_df, s1_c_rows, s1_candidate_probs
+        gc.collect()
+
+    print(f"\n--- Writing Final Output Files ---", flush=True)
     cand_path = os.path.join(output_dir, "candidate_pairs.tsv")
     match_path = os.path.join(output_dir, "matching_results.tsv")
 
-    print(f"Writing {cand_path}...")
+    print(f"Writing {cand_path}...", flush=True)
     with open(cand_path, "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tcandidate_entity_ids\n")
-        for r in s1_rows:
-            eid = r["entity_id"]
+        for eid in all_s1_ids:
             cands = candidate_pairs_map.get(eid, [])
             cand_str = ",".join(cands)
             f.write(f"{eid}\t{cand_str}\n")
 
-    print(f"Writing {match_path}...")
+    print(f"Writing {match_path}...", flush=True)
     num_matched_entities = 0
     total_matched_links = 0
     with open(match_path, "w", encoding="utf-8") as f:
         f.write("source1_entity_id\tmatched_entity_ids\n")
-        for r in s1_rows:
-            eid = r["entity_id"]
+        for eid in all_s1_ids:
             matches = matching_results_map.get(eid, set())
             match_str = ",".join(sorted(matches))
             f.write(f"{eid}\t{match_str}\n")
@@ -147,11 +169,11 @@ def run_inference(
                 num_matched_entities += 1
                 total_matched_links += len(matches)
 
-    print(f"\nMatching Results Summary:")
-    print(f"  Total S1 entities: {total_s1:,}")
-    print(f"  Entities with matches: {num_matched_entities:,} ({num_matched_entities/total_s1:.2%})")
-    print(f"  Singletons (no match): {total_s1 - num_matched_entities:,} ({(total_s1 - num_matched_entities)/total_s1:.2%})")
-    print(f"  Total matched links: {total_matched_links:,}")
+    print(f"\nFinal Test Matching Summary:", flush=True)
+    print(f"  Total S1 entities written: {total_s1:,}", flush=True)
+    print(f"  Entities with matches: {num_matched_entities:,} ({num_matched_entities/total_s1:.2%})", flush=True)
+    print(f"  Singletons (no matches): {total_s1 - num_matched_entities:,} ({(total_s1 - num_matched_entities)/total_s1:.2%})", flush=True)
+    print(f"  Total matched links: {total_matched_links:,}", flush=True)
 
 
 if __name__ == "__main__":

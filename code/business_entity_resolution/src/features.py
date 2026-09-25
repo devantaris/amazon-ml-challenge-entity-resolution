@@ -30,6 +30,9 @@ FEATURE_NAMES: List[str] = [
     "name_token_sort",
     "name_token_set",
     "name_token_jaccard",
+    "name_token_containment",
+    "name_prefix4_match",
+    "name_sorted_jw",
     "name_char3_jaccard",
     "name_exact_match",
     "name_comp_exact",
@@ -45,12 +48,15 @@ FEATURE_NAMES: List[str] = [
     "addr_token_sort",
     "addr_token_set",
     "addr_token_jaccard",
+    "addr_token_containment",
     "addr_char3_jaccard",
     # Structured address flags
     "pin_match",
     "pin_both_present",
+    "pin_disagree",
     "st_num_match",
     "st_num_both_present",
+    "st_num_disagree",
     # Meta and blocking rank features
     "cand_source_is_s2",
     "cand_rank",
@@ -87,6 +93,8 @@ class RecordRepresentation:
         "name_clean",
         "name_tokens",
         "name_token_set",
+        "name_sorted",
+        "name_prefix4",
         "name_char3",
         "name_acr",
         "name_comp",
@@ -108,6 +116,8 @@ class RecordRepresentation:
         self.name_clean = n_clean
         self.name_tokens = n_toks
         self.name_token_set = set(n_toks)
+        self.name_sorted = " ".join(sorted(n_toks))
+        self.name_prefix4 = n_clean[:4] if len(n_clean) >= 4 else n_clean
         self.name_char3 = char_ngrams(n_comp, 3)
 
         # Core acronym (excluding legal suffixes and stopwords)
@@ -150,13 +160,20 @@ def compute_pair_features(
     feats[2] = fuzz.token_sort_ratio(s1_nc, cand_nc) / 100.0
     feats[3] = fuzz.token_set_ratio(s1_nc, cand_nc) / 100.0
     feats[4] = jaccard(s1.name_token_set, cand.name_token_set)
-    feats[5] = jaccard(s1.name_char3, cand.name_char3)
-    feats[6] = 1.0 if s1_nc and s1_nc == cand_nc else 0.0
+
+    min_tokens = min(len(s1.name_token_set), len(cand.name_token_set))
+    if min_tokens > 0:
+        feats[5] = len(s1.name_token_set & cand.name_token_set) / min_tokens
+
+    feats[6] = 1.0 if (s1.name_prefix4 and s1.name_prefix4 == cand.name_prefix4) else 0.0
+    feats[7] = jw.similarity(s1.name_sorted, cand.name_sorted)
+    feats[8] = jaccard(s1.name_char3, cand.name_char3)
+    feats[9] = 1.0 if s1_nc and s1_nc == cand_nc else 0.0
 
     s1_comp = s1.name_comp
     cand_comp = cand.name_comp
-    feats[7] = 1.0 if s1_comp and s1_comp == cand_comp else 0.0
-    feats[8] = 1.0 if (s1_comp and cand_comp and (s1_comp in cand_comp or cand_comp in s1_comp)) else 0.0
+    feats[10] = 1.0 if s1_comp and s1_comp == cand_comp else 0.0
+    feats[11] = 1.0 if (s1_comp and cand_comp and (s1_comp in cand_comp or cand_comp in s1_comp)) else 0.0
 
     # Acronym matching
     acr_match = 0.0
@@ -164,45 +181,52 @@ def compute_pair_features(
         acr_match = 1.0
     elif len(cand.name_acr) >= 2 and (cand.name_acr == s1_comp or cand.name_acr in s1.name_token_set):
         acr_match = 1.0
-    feats[9] = acr_match
+    feats[12] = acr_match
 
     len1 = len(s1_nc)
     len2 = len(cand_nc)
-    feats[10] = abs(len1 - len2)
-    feats[11] = min(len1, len2) / max(len1, len2, 1)
+    feats[13] = abs(len1 - len2)
+    feats[14] = min(len1, len2) / max(len1, len2, 1)
 
     # 2. Address features
     s1_has_addr = bool(s1.addr_clean)
     cand_has_addr = bool(cand.addr_clean)
-    feats[12] = 0.0 if s1_has_addr else 1.0
-    feats[13] = 0.0 if cand_has_addr else 1.0
-    feats[14] = 1.0 if (s1_has_addr and cand_has_addr) else 0.0
+    feats[15] = 0.0 if s1_has_addr else 1.0
+    feats[16] = 0.0 if cand_has_addr else 1.0
+    feats[17] = 1.0 if (s1_has_addr and cand_has_addr) else 0.0
 
     if s1_has_addr and cand_has_addr:
-        feats[15] = jw.similarity(s1.addr_clean, cand.addr_clean)
-        feats[16] = fuzz.token_sort_ratio(s1.addr_clean, cand.addr_clean) / 100.0
-        feats[17] = fuzz.token_set_ratio(s1.addr_clean, cand.addr_clean) / 100.0
-        feats[18] = jaccard(s1.addr_token_set, cand.addr_token_set)
-        feats[19] = jaccard(s1.addr_char3, cand.addr_char3)
+        feats[18] = jw.similarity(s1.addr_clean, cand.addr_clean)
+        feats[19] = fuzz.token_sort_ratio(s1.addr_clean, cand.addr_clean) / 100.0
+        feats[20] = fuzz.token_set_ratio(s1.addr_clean, cand.addr_clean) / 100.0
+        feats[21] = jaccard(s1.addr_token_set, cand.addr_token_set)
+        min_addr_tokens = min(len(s1.addr_token_set), len(cand.addr_token_set))
+        if min_addr_tokens > 0:
+            feats[22] = len(s1.addr_token_set & cand.addr_token_set) / min_addr_tokens
+        feats[23] = jaccard(s1.addr_char3, cand.addr_char3)
 
     # Structured fields
     if s1.pin and cand.pin:
-        feats[20] = 1.0 if s1.pin == cand.pin else -1.0
-        feats[21] = 1.0
+        feats[24] = 1.0 if s1.pin == cand.pin else -1.0
+        feats[25] = 1.0
+        feats[26] = 1.0 if s1.pin != cand.pin else 0.0
     else:
-        feats[20] = 0.0
-        feats[21] = 0.0
+        feats[24] = 0.0
+        feats[25] = 0.0
+        feats[26] = 0.0
 
     if s1.st_num and cand.st_num:
-        feats[22] = 1.0 if s1.st_num == cand.st_num else -1.0
-        feats[23] = 1.0
+        feats[27] = 1.0 if s1.st_num == cand.st_num else -1.0
+        feats[28] = 1.0
+        feats[29] = 1.0 if s1.st_num != cand.st_num else 0.0
     else:
-        feats[22] = 0.0
-        feats[23] = 0.0
+        feats[27] = 0.0
+        feats[28] = 0.0
+        feats[29] = 0.0
 
     # Meta
-    feats[24] = cand.is_s2
-    feats[25] = float(cand_rank)
-    feats[26] = float(blocking_score)
+    feats[30] = cand.is_s2
+    feats[31] = float(cand_rank)
+    feats[32] = float(blocking_score)
 
     return feats

@@ -78,7 +78,7 @@ def sweep_optimal_threshold(
         (best_threshold, best_f05, best_metrics_dict)
     """
     if thresholds is None:
-        thresholds = [0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90]
+        thresholds = [round(x, 2) for x in np.arange(0.50, 0.92, 0.02)]
 
     best_thresh = 0.65
     best_f05 = -1.0

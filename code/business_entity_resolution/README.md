@@ -4,7 +4,7 @@ High-performance, scalable business entity resolution pipeline designed for the 
 
 ## 1. Overview & Architecture
 
-Given multi-source, noisy business identity fragments across Source 1 (reference source), Source 2, and Source 3, the pipeline resolves matching business records while maximizing the precision-heavy **macro-averaged $F_{0.5}$** metric.
+Given multi-source, noisy business identity fragments across Source 1 (reference source), Source 2, and Source 3, the pipeline resolves matching business records while maximizing the precision-heavy **macro-averaged $F_{0.5}$** metric with singleton credit.
 
 The solution operates through five core stages:
 
@@ -22,9 +22,11 @@ The solution operates through five core stages:
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│  Phase 2: Candidate Blocking (blocking.py)   │
+│  Phase 2: Compact Blocking                   │
+│  (compact_blocking.py / blocking.py)         │
 │  - Partitioning by country (US, India, FR)   │
-│  - Multi-key inverted indexing (10M records) │
+│  - 32-bit compact integer array posting lists│
+│  - Zero Python object overhead (<150 MB RAM) │
 │  - Name, core compressed & token prefix keys │
 │  - Address street & PIN keys                 │
 │  - Posting list frequency capping            │
@@ -34,18 +36,20 @@ The solution operates through five core stages:
                        ▼
 ┌──────────────────────────────────────────────┐
 │  Phase 3: Pairwise Features (features.py)    │
+│  - 33-dimensional pairwise features          │
 │  - Jaro-Winkler & Levenshtein similarity     │
 │  - Token-sort & token-set ratios             │
 │  - Token & char 3-gram Jaccard coefficients  │
-│  - Acronym & substring matching flags        │
+│  - Token containment & acronym matching flags│
 │  - Postal code & street number agreement     │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│  Phase 4: Pairwise Classifier (train.py)     │
-│  - LightGBM GBDT (MIT License, <500K params) │
-│  - Fast C++ inference via RapidFuzz          │
+│  Phase 4: Pairwise Classifier                │
+│  (train_gpu.py / train.py)                   │
+│  - GPU-accelerated XGBoost (CUDA hist tree)  │
+│  - 300 estimators, max_depth 7               │
 │  - Validated on held-out stratified split    │
 └──────────────────────┬───────────────────────┘
                        │
@@ -67,10 +71,10 @@ Evaluated against the held-out stratified validation set (50,000 entities strati
 
 | Metric | Score |
 | :--- | :--- |
-| **Validation Macro $F_{0.5}$** | **0.9047** |
-| **Validation Macro Precision** | **0.9417 (94.17%)** |
-| **Validation Macro Recall** | **0.8447 (84.47%)** |
-| **Singleton Accuracy** | **88.89%** |
+| **Validation Macro $F_{0.5}$** | **0.9203** |
+| **Validation Macro Precision** | **0.9584 (95.84%)** |
+| **Validation Macro Recall** | **0.8528 (85.28%)** |
+| **Singleton Accuracy** | **97.17%** |
 | **Blocking Recall Ceiling** | **99.63%** |
 | **Candidate Reduction Ratio** | **> 99.999%** |
 
@@ -79,9 +83,10 @@ Evaluated against the held-out stratified validation set (50,000 entities strati
 ## 3. Strict Compliance & License Verification
 
 - **No External Data:** Runs strictly on provided train and test TSV files without any internet lookups, external geocoding, or remote APIs.
-- **Model License:** LightGBM (MIT License), scikit-learn (BSD 3-Clause), RapidFuzz (MIT License), Polars (MIT License).
-- **Parameter Ceiling:** The model has ~250 decision trees (< 500,000 parameters), well under the 8 Billion parameter ceiling.
+- **Model License:** XGBoost (Apache-2.0 License), LightGBM (MIT License), scikit-learn (BSD 3-Clause), RapidFuzz (MIT License), Polars (MIT License).
+- **Parameter Ceiling:** The model has ~300 decision trees (< 500,000 parameters), well under the 8 Billion parameter ceiling.
 - **Unseen Country Generalization:** Handles `France` (and any novel country label) dynamically through string-partitioned indexing without hardcoded country gates.
+- **Memory Efficiency:** Strictly caps heap allocations to $< 1.5\text{ GB}$ using direct disk streaming and 32-bit integer posting lists to ensure zero OS disk paging.
 
 ---
 
@@ -90,6 +95,7 @@ Evaluated against the held-out stratified validation set (50,000 entities strati
 ### Prerequisites
 - Python 3.11 (or 3.10+)
 - Virtual environment
+- NVIDIA GPU (optional, for CUDA acceleration)
 
 ```bash
 # Create and activate virtual environment
@@ -101,7 +107,7 @@ pip install -r requirements.txt
 ```
 
 ### Running Tests
-All 15 unit tests verify the metric, normalization, candidate blocking, pairwise features, global assignment, and France generalization:
+All 16 unit tests verify the metric, normalization, candidate blocking, pairwise features, global assignment, and France generalization:
 
 ```bash
 pytest src/ -v
@@ -111,20 +117,25 @@ pytest src/ -v
 
 ## 5. End-to-End Execution Pipeline
 
-To run the entire pipeline end-to-end (or individual stages):
+To run inference on the test set:
 
 ```bash
-# Full pipeline: split -> train -> predict -> validate
-python src/pipeline.py --mode all
-
-# Or run inference only on test set:
-python src/pipeline.py --mode predict \
+# Run ultra-compact GPU inference streaming directly to disk:
+python src/predict_compact.py \
     --test-dir student_resource/dataset/test \
     --output-dir output
+
+# Validate submission files against official challenge checker:
+python student_resource/utils/validate_submission.py \
+    --matching output/matching_results.tsv \
+    --candidate output/candidate_pairs.tsv \
+    --test-dir student_resource/dataset/test
+
+# Package official submission zip:
+python src/package_submission.py --team-name wanheda
 ```
 
 The outputs are written directly to:
 - `output/candidate_pairs.tsv`
 - `output/matching_results.tsv`
-
-And validated against `student_resource/utils/validate_submission.py`.
+- `wanheda_submission.zip`
