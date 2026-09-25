@@ -10,6 +10,7 @@ Generates:
 import os
 import argparse
 import pickle
+from typing import Optional
 import numpy as np
 import polars as pl
 from tqdm import tqdm
@@ -26,6 +27,7 @@ def run_inference(
     max_cands_per_entity: int = 35,
     batch_size: int = 10000,
     override_threshold: float = None,
+    sample_size: Optional[int] = None,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
 
@@ -76,10 +78,11 @@ def run_inference(
     s1_candidate_probs = {}
 
     s1_rows = s1_df.to_dicts()
-
+    if sample_size is not None and sample_size > 0:
+        s1_rows = s1_rows[:sample_size]
+        total_s1 = len(s1_rows)
     for idx in tqdm(range(0, total_s1, batch_size), desc="Scoring S1 Batches"):
         batch_slice = s1_rows[idx : idx + batch_size]
-
         for r in batch_slice:
             s1_id = r["entity_id"]
             s1_rep = RecordRepresentation(
@@ -157,6 +160,7 @@ if __name__ == "__main__":
     parser.add_argument("--model-path", default="cache/models/lgb_matcher.pkl")
     parser.add_argument("--output-dir", default="output")
     parser.add_argument("--threshold", type=float, default=None)
+    parser.add_argument("--sample-size", type=int, default=None)
     args = parser.parse_args()
 
     run_inference(
@@ -164,4 +168,5 @@ if __name__ == "__main__":
         model_path=args.model_path,
         output_dir=args.output_dir,
         override_threshold=args.threshold,
+        sample_size=args.sample_size,
     )
