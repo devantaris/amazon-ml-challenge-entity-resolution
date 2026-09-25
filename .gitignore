@@ -1,0 +1,48 @@
+# Python virtual environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python cache and byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Datasets and large binary files (>100MB cannot be pushed to GitHub)
+*.zip
+*.tar
+*.gz
+student_resource/dataset/
+dataset/
+data/
+cache/
+*.parquet
+*.feather
+*.pkl
+*.pickle
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# Submission outputs and predictions (TSV files)
+output/
+*.tsv
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+__MACOSX/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.swp
