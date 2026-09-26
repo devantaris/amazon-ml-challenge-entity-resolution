@@ -13,13 +13,14 @@ Handles:
 import re
 import unicodedata
 from typing import Dict, List, Optional, Set, Tuple
+from unidecode import unidecode
 
 
 # Precompiled regular expressions for speed
 RE_WHITESPACE = re.compile(r"\s+")
 RE_AMPERSAND = re.compile(r"&")
 RE_PUNCTUATION = re.compile(r"[^\w\s]")
-RE_POSTAL_CODE = re.compile(r"\b(\d{5}(?:-\d{4})?|\b[1-9]\d{5})\b")
+RE_POSTAL_CODE = re.compile(r"\b([1-9]\d{2}\s\d{3}|\d{5}(?:-\d{4})?|[1-9]\d{5})\b")
 RE_STREET_NUMBER = re.compile(r"^\s*(\d+[a-zA-Z]?(?:-\d+[a-zA-Z]?)?)\b")
 RE_LANDMARK = re.compile(
     r"\b(?:near|opp|opposite|behind|adjacent to|beside|in front of|next to)\s+([^,]+)",
@@ -66,6 +67,43 @@ LEGAL_MAPPINGS: Dict[str, str] = {
     "bv": "bv",
     "nv": "nv",
     "pty": "pty",
+    # Transliterated Indic legal mappings
+    "praaivett": "pvt",
+    "praaivet": "pvt",
+    "piraiveett": "pvt",
+    "piraivett": "pvt",
+    "limittedd": "ltd",
+    "limitted": "ltd",
+    "limittett": "ltd",
+    "limitett": "ltd",
+    "elelpii": "llp",
+    "elelp": "llp",
+    "kampnii": "co",
+    "kompnii": "co",
+    "korporeshn": "corp",
+    "enttrpraaiziz": "ent",
+    "enttrpraaiz": "ent",
+    "tteknoloNjiij": "tech",
+    "teknoloNjiij": "tech",
+    "inphraa": "infra",
+    "aagro": "agro",
+    "impeks": "impex",
+    "eksporrtt": "export",
+    "eksporrt": "export",
+    "brodrrs": "bros",
+    "brdrrs": "bros",
+    "industtriij": "ind",
+    "srvisez": "svc",
+    "srviss": "svc",
+    "solyuushn": "soln",
+    "solyuushnz": "soln",
+    "societe": "soc",
+    "etablissement": "etab",
+    "etablissements": "etab",
+    "freres": "bros",
+    "shri": "sri",
+    "shree": "sri",
+    "sree": "sri",
 }
 
 # Common address abbreviations canonical mapping
@@ -101,6 +139,13 @@ ADDRESS_MAPPINGS: Dict[str, str] = {
     "center": "ctr",
     "plaza": "plz",
     "square": "sq",
+    # French address mappings
+    "rue": "r",
+    "chemin": "chem",
+    "route": "rte",
+    "place": "pl",
+    "allee": "all",
+    "impasse": "imp",
 }
 
 # Stopwords for candidate indexing (very common terms that produce bloated posting lists)
@@ -128,12 +173,10 @@ US_STATES: Dict[str, str] = {
 
 
 def basic_clean(text: str) -> str:
-    """Normalize unicode, lowercase, standardize ampersands and collapse whitespace."""
+    """Normalize unicode via unidecode, lowercase, standardize ampersands and collapse whitespace."""
     if not text or not isinstance(text, str):
         return ""
-    # NFKD unicode normalization
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
+    text = unidecode(text)
     text = text.lower()
     text = RE_AMPERSAND.sub(" and ", text)
     return text
@@ -180,7 +223,7 @@ def normalize_business_address(address: str) -> Tuple[str, List[str], Optional[s
 
     # Extract postal code
     postal_match = RE_POSTAL_CODE.search(cleaned)
-    postal_code = postal_match.group(1).replace("-", "") if postal_match else None
+    postal_code = postal_match.group(1).replace("-", "").replace(" ", "") if postal_match else None
 
     # Extract leading street number
     street_num_match = RE_STREET_NUMBER.search(cleaned)

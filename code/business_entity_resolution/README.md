@@ -35,21 +35,26 @@ The solution operates through five core stages:
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│  Phase 3: Pairwise Features (features.py)    │
-│  - 33-dimensional pairwise features          │
+│  Phase 3: Pairwise Features                  │
+│  (features.py / enhanced_features.py)        │
+│  - 42-dimensional enriched pairwise features │
 │  - Jaro-Winkler & Levenshtein similarity     │
 │  - Token-sort & token-set ratios             │
 │  - Token & char 3-gram Jaccard coefficients  │
 │  - Token containment & acronym matching flags│
+│  - TF-IDF Cosine Similarity (Name & Address) │
+│  - BM25 Relevance Scoring (Name & Address)   │
+│  - Max Shared IDF & Phonetic Encodings       │
 │  - Postal code & street number agreement     │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
 ┌──────────────────────────────────────────────┐
-│  Phase 4: Pairwise Classifier                │
-│  (train_gpu.py / train.py)                   │
+│  Phase 4: Ensemble Stacking Classifier       │
+│  (train_v5_fast.py)                          │
 │  - GPU-accelerated XGBoost (CUDA hist tree)  │
-│  - 300 estimators, max_depth 7               │
+│  - CPU LightGBM (63 leaves)                  │
+│  - Logistic Regression Meta-Learner (Stacking│
 │  - Validated on held-out stratified split    │
 └──────────────────────┬───────────────────────┘
                        │
