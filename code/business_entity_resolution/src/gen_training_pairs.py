@@ -82,7 +82,11 @@ def main():
     ap.add_argument("--backup-dir", default="")  # e.g. /content/drive/MyDrive/ER_Challenge/pairs
     ap.add_argument("--n-entities", type=int, default=500_000)
     ap.add_argument("--k", type=int, default=60)
-    ap.add_argument("--overgen", type=int, default=200)
+    ap.add_argument("--overgen", type=int, default=120)
+    ap.add_argument("--tok-posting", type=int, default=1500,
+                    help="posting cap for token/composite keys — training pairs "
+                         "only need top-K candidates, so this can be far below "
+                         "the inference-time value")
     ap.add_argument("--shard-entities", type=int, default=50_000)
     ap.add_argument("--max-feats", type=int, default=30000)
     ap.add_argument("--seed", type=int, default=42)
@@ -131,7 +135,7 @@ def main():
         print(f"\n=============== {country}: {len(ids_c):,} entities ===============", flush=True)
 
         # 3. index full pool for this country
-        blocker = StreamingBlockerV2(overgenerate=args.overgen, topk=args.k)
+        blocker = StreamingBlockerV2(tok_posting=args.tok_posting, overgenerate=args.overgen, topk=args.k)
         tgt_ids, tgt_names, tgt_addrs, tgt_countries = [], [], [], []
         t0 = time.time()
         for path in ("train_source2.tsv", "train_source3.tsv"):
@@ -258,7 +262,7 @@ def main():
                 flush_shard()
                 done_now = done + processed
                 open(done_file, "w").write(str(done_now))
-            if processed % 2_000 == 0:
+            if processed % 1_000 == 0:
                 el = time.time() - t1
                 rate = processed / max(el, 1e-9)
                 eta_min = (len(ids_c) - processed) / max(rate, 1e-9) / 60
